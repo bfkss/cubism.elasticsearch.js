@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+
+<title>Cubism ElasticSearch</title>
+
+<style>
+  @import url(style.css);
+  body   { font: 300 12px "Helvetica Neue", Helvetica, sans-serif; width: 960px; padding: 1px; margin-top: 2px; }
+  h1     { color: #999; font-weight: 300; letter-spacing: -1px; border-bottom: 2px solid #a3a3a3; margin: 0 0 2px 0; padding: 0; position: relative; }
+  h1 select { float: right; }
+  .horizon { }
+  .horizon .title { font-size: 14px; text-shadow: rgba(255, 255, 255, 0.9) 0.1em 0.1em 0.09em !important; }
+  .horizon .value { font-weight: bolder; text-shadow: rgba(255, 255, 255, 0.9) 0.1em 0.1em 0.09em !important; }
+  .horizon span.remove       { display: none; color: #999; font-size: 10px; position: absolute; top: 5px; left: 6px; }
+  .horizon:hover             { background-color: #f5f5f5; }
+  .horizon:hover span.remove { display: inline; }
+</style>
+
+<script src="d3.v2.min.js"></script>
+<script src="colorbrewer.min.js"></script>
+<script src="cubism.v1.min.js"></script>
+<script src="cubism.elasticsearch.js"></script>
+<script src="http://code.jquery.com/jquery-1.7.2.min.js"></script>
+
+<body>
+
+<h1>N/A</h1>
+
+<div id="chart"></div>
+<p><button id="toggle">Stop</button></p>
+
+<script>
+// Set up Cubism.js context
+//
+var context = cubism.context()
+    .serverDelay(0)
+    .clientDelay(0)
+    .step(1000)
+    .size(960);
+
+// Default metrics
+//
+var default_metrics = []
+
+// Set up ElasticSearch metrics
+//
+var elasticsearch = cubism.elasticsearch(context, {host: "http://localhost:9200"}, function() {
+  default_metrics = [
+    { metrics: this.metrics("os.cpu.user"), colors: 'Greens' },
+    { metrics: this.metrics("process.cpu.percent"), colors: 'Greens' },
+    { metrics: this.metrics("jvm.mem.heap_used_in_bytes"), colors: 'Blues' },
+    { metrics: this.metrics("http.current_open"), colors: 'Oranges' }
+  ]
+  // Add default metrics
+  //
+  default_metrics.forEach( function(group) { chart.add(group.metrics, {colors: group.colors}); } );
+
+  // Add extra metrics
+  chart.add([this.metric("indices.docs.count")],             {colors: 'Greys'})
+  chart.add([this.metric("indices.indexing.index_current")], {colors: 'Spectral'})
+  chart.add([this.metric("indices.search.query_current")],   {colors: 'YlOrRd'})
+});
+// console.log(elasticsearch);
+
+// Set up chart canvas
+//
+var chart = d3.select("#chart");
+
+chart.append("div")
+    .attr("class", "axis top")
+    .call(context.axis().orient("top"));
+
+chart.append("div")
+    .attr("class", "rule")
+    .call(context.rule());
+
+// Function to add new chart
+//
+chart.add = function(metrics, options) {
+  var options = options || {colors: 'Greens'}
+
+  chart.selectAll(".horizon")
+      .data(metrics, function(d) { return d.toString(); })
+    .enter().append("div")
+      .attr("class", "horizon")
+      .call(context.horizon()
+        .height(40)
+        .colors(function() { return colorbrewer[options['colors']][8] })
+      )
+      .on("click", function() { return d3.select(this).remove(); })
+      .insert("span")
+        .classed("remove", true)
+        .text("click to remove");
+
+  return chart;
+};
+
+// Header
+//
+d3.select("h1").text(elasticsearch.toString());
+
+// Select to add a metric
+//
+var metrics = d3.select("h1")
+  .insert("select")
+  .attr("id", "metrics")
+  .attr("accesskey", "c")
+  .on("change", function(e) {
+    if ('Add metric...' != this.value) {
+      chart.add(elasticsearch.metrics(this.value), {colors: colors.node().options[colors.node().selectedIndex].value})
+      this.selectedIndex = 0
+      this.blur()
+    }
+  });
+metrics
+  .append("option").text("Add metric...");
+
+// Select to choose color
+//
+var colors = d3.select("h1")
+  .insert("select")
+  .attr("id", "colors");
+colors
+  .selectAll("option")
+  .data( d3.keys(colorbrewer) )
+  .enter()
+    .append("option")
+    .text(function(d) { return d; })
+    .node();
+colors.node().selectedIndex = 14;
+
+// Move the rule with mouse
+//
+context.on("focus", function(i) { d3.selectAll(".value").style("right", i == null ? null : context.size() - i + "px"); });
+
+// Load stats data and populate <select> to add new metrics
+//
+d3.json(elasticsearch.url(), function(json) {
+  var nodes = d3.keys(json.nodes),
+      data  = json.nodes[nodes[0]],
+      keys  = d3.keys(data).filter( function(d) { return 'object' == typeof data[d]; } );
+
+  var stats = {};
+
+  for (var stat in data) {
+    // console.log('stat:', stat)
+    if ('object' == typeof data[stat]) {
+      stats[stat] = []
+      for (var group in data[stat]) {
+        // console.log(' group:', group, typeof data[stat][group])
+        if ( 'number' == typeof data[stat][group] ) {
+          stats[stat].push(stat+'.'+group+'')
+        }
+        if ('object' == typeof data[stat][group]) {
+          for (var metric in data[stat][group]) {
+            // console.log('  metric:', metric, typeof data[stat][group][metric])
+            if ( 'number' == typeof data[stat][group][metric] ) {
+              stats[stat].push(stat+'.'+group+'.'+metric+'')
+            }
+          }
+          stats[stat].sort()
+        }
+      }
+    }
+  }
+  // console.log('---', 'stats:', stats)
+
+  var group = metrics
+    .selectAll("optgroup")
+    .data( d3.keys(stats) )
+    .enter()
+      .append("optgroup")
+      .attr("label", function(d) { return d.toUpperCase(); });
+
+  var options = group
+    .selectAll("option")
+    .data( function(d, i) { return stats[d]} )
+    .enter()
+      .append("option")
+      .text(function(d) { return d; })
+});
+
+// Hook up the start/stop button
+//
+d3.select("#toggle").on("click",
+  function() {
+    var button = d3.select(this);
+
+    if (button.text() == 'Stop') { button.text('Start'); context.stop();  }
+    else                         { button.text('Stop');  context.start(); }
+  }
+);
+</script>
